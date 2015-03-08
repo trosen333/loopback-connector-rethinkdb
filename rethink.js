@@ -8,7 +8,7 @@ var util = require("util");
 
 var Connector = require('loopback-connector').Connector;
 
-exports.initialize = function initializedataSource(dataSource, callback) {
+exports.initialize = function initializeDataSource(dataSource, callback) {
     if (!r) return;
 
     var s = dataSource.settings;
@@ -360,7 +360,7 @@ RethinkDB.prototype.all = function all(model, filter, callback) {
         var promise = r.db(_this.database).table(model);
 
         if (filter.where) {
-            promise = _processWhere(_this, model, filter.where, promise);
+            promise = buildWhere(_this, model, filter.where, promise)//_processWhere(_this, model, filter.where, promise);
         }
 
         if (filter.order) {
@@ -390,6 +390,8 @@ RethinkDB.prototype.all = function all(model, filter, callback) {
         if (filter.limit) {
             promise = promise.limit(filter.limit);
         }
+
+        //console.log(promise.toString())
 
         promise.run(client, function(error, cursor) {
 
@@ -444,7 +446,7 @@ RethinkDB.prototype.count = function count(model, callback, where) {
         var promise = r.db(_this.database).table(model);
 
         if (where && typeof where === "object")
-            promise = _processWhere(_this, model, where, promise);
+            promise = buildWhere(_this, model, where, promise);
 
         promise.count().run(client, function (err, count) {
             _this.pool.release(client);
@@ -536,127 +538,112 @@ function _inqFn(k, cond) {
     };
 }
 
-function _processWhere(_this, model, where, promise) {
-    //Transform promise (a rethinkdb query) based on the given where clause.
-    //Returns the modified promise
-    var i, m, keys;
-    var inqFn, matchFn;
-    var indexed = false;
-    var queryParts = [];
-    Object.keys(where).forEach(function (k) {
-        var spec, cond = where[k];
-        var allConds = [];
-        if (cond && cond.constructor.name === 'Object') {
-            keys = Object.keys(cond);
-            for (i = 0, m = keys.length; i < m; i++) {
-                allConds.push([ keys[i], cond[keys[i]] ]);
-            }
-        }
-        else {
-            allConds.push([ false, cond ]);
-        }
-        var hasIndex = _hasIndex(_this, model, k);
-        for (i = 0, m = allConds.length; i < m; i++) {
-            spec = allConds[i][0];
-            cond = allConds[i][1];
-            if (cond instanceof Date) {
+var operators = {
+    "between": function(key, value) {
+        return r.row(key).gt(value[0]).and(r.row(key).lt(value[1]))
+    },
+    "gt": function(key, value) {
+        return r.row(key).gt(value)
+    },
+    "lt": function(key, value) {
+        return r.row(key).lt(value)
+    },
+    "gte": function(key, value) {
+        return r.row(key).ge(value)
+    },
+    "lte": function(key, value) {
+        return r.row(key).le(value)
+    },
+    "inq": function(key, value) {
+        var query = []
 
-                // Time comparison should still work regardless of
-                // whether we stored the timestamp (old approach)
-                // or the native Date obj.
+        value.forEach(function(v) {
+            query.push(r.row(key).eq(v))
+        })
 
-                // TODO: Consider removing this on a major version bump?
-                cond = moment(cond).unix();
-            }
-            if (!spec) {
-                if (cond instanceof RegExp) {
-                    matchFn = _matchFn(k, cond);
-                    promise = promise.filter(matchFn);
-                } else if(!indexed && hasIndex) {
-                    promise = promise.getAll(cond, {index: k});
-                    indexed = true;
-                } else {
-                    queryParts.push(r.row(k).eq(cond));
-                }
-            }
-            else {
-                switch (spec) {
-                    case 'between':
-                        if(!indexed && hasIndex) {
-                            promise = promise.between(cond[0], cond[1], {index: k});
-                            indexed = true;
-                        } else {
-                            queryParts.push(r.row(k).ge(cond[0]).and(r.row(k).le(cond[1])));
-                        }
-                        break;
-                    case 'inq':
-                        if(!indexed && hasIndex) {
-                            cond.push({ index: k });
-                            promise = promise.getAll.apply(promise, cond);
-                            indexed = true;
-                        } else {
-                            inqFn = _inqFn(k, cond);
-                            queryParts.push(inqFn);
-                        }
-                        break;
-                    case 'nin':
-                        queryParts.push(r.expr(cond).contains(r.row(k)).not());
-                        break;
-                    case 'gt':
-                        if(!indexed && hasIndex) {
-                            promise = promise.between(cond, null, {index: k, left_bound: 'open'});
-                            indexed = true;
-                        }
-                        else {
-                            queryParts.push(r.row(k).gt(cond));
-                        }
-                        break;
-                    case 'gte':
-                        if(!indexed && hasIndex) {
-                            promise = promise.between(cond, null, {index: k, left_bound: 'closed'});
-                            indexed = true;
-                        }
-                        else {
-                            queryParts.push(r.row(k).ge(cond));
-                        }
-                        break;
-                    case 'lt':
-                        if(!indexed && hasIndex) {
-                            promise = promise.between(null, cond, {index: k, right_bound: 'open'});
-                            indexed = true;
-                        }
-                        else {
-                            queryParts.push(r.row(k).lt(cond));
-                        }
-                        break;
-                    case 'lte':
-                        if(!indexed && hasIndex) {
-                            promise = promise.between(null, cond, {index: k, right_bound: 'closed'});
-                            indexed = true;
-                        }
-                        else {
-                            queryParts.push(r.row(k).le(cond));
-                        }
-                        break;
-                    case 'neq':
-                        queryParts.push(r.row(k).ne(cond));
-                        break;
-                }
-            }
-        }
-    });
+        var condition = _.reduce(query, function(sum, qq) {
+            return sum.or(qq)
+        })
 
-    var query;
-    queryParts.forEach(function (comp) {
-        if (!query) {
-            query = comp;
+        return condition
+    },
+    "nin": function(key, value) {
+        var query = []
+
+        value.forEach(function(v) {
+            query.push(r.row(key).ne(v))
+        })
+
+        var condition = _.reduce(query, function(sum, qq) {
+            return sum.and(qq)
+        })
+
+        return condition
+    },
+    "neq": function(key, value) {
+        return r.row(key).ne(value)
+    },
+    "like": function(key, value) {
+        return r.row(key).match(value)
+    },
+    "nlike": function(key, value) {
+        return r.row(key).match(value).not()
+    }
+}
+
+function buildFilter(where) {
+    var filter = []
+
+    Object.keys(where).forEach(function(k) {
+
+        // determine if k is field name or condition name
+        var conditions = ["and", "or", "between", "gt", "lt", "gte", "lte", "inq", "nin", "near", "neq", "like", "nlike"]
+        var condition = where[k]
+
+        if (k === "and" || k === "or") {
+            if (_.isArray(condition)) {
+                var query = _.map(condition, function(c) {
+                    return buildFilter(c)
+                })
+
+                if (k === "and")
+                    filter.push(_.reduce(query, function(s, f) {
+                        return s.and(f)
+                    }))
+                else
+                    filter.push(_.reduce(query, function(s, f) {
+                        return s.or(f)
+                    }))
+            }
         } else {
-            query = query.and(comp);
-        }
-    });
-    if (query) {
-        promise = promise.filter(query);
+            if (_.isObject(condition) && _.intersection(_.keys(condition), conditions).length > 0) {
+                // k is condition
+                _.keys(condition).forEach(function(operator) {
+                    if (conditions.indexOf(operator) >= 0) {
+                        filter.push(operators[operator](k, condition[operator]))
+                    }
+                })
+            } else {
+                // k is field equality
+                filter.push(r.row(k).eq(condition))
+            }
+        }    
+
+    })
+
+    return _.reduce(filter, function(s, f) {
+        return s.and(f)
+    })
+}
+
+function buildWhere(self, model, where, promise) {
+
+    if (where === null || (typeof where !== 'object')) {
+        return promise;
     }
 
-    return promise;
+    var query = buildFilter(where)    
+
+    return promise.filter(query)
+
 }
