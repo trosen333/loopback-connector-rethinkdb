@@ -258,7 +258,7 @@ RethinkDB.prototype.isActual = function(cb) {
     });
 };
 
-RethinkDB.prototype.create = RethinkDB.prototype.updateOrCreate = function (model, data, callback) {
+RethinkDB.prototype.create = function (model, data, callback) {
     if (data.id === null || data.id === undefined) {
         delete data.id;
     }
@@ -266,7 +266,15 @@ RethinkDB.prototype.create = RethinkDB.prototype.updateOrCreate = function (mode
     this.save(model, data, callback, true);
 };
 
-RethinkDB.prototype.save = function (model, data, callback, strict) {
+RethinkDB.prototype.updateOrCreate = function (model, data, callback) {
+    if (data.id === null || data.id === undefined) {
+        delete data.id;
+    }
+
+    this.save(model, data, callback, true, true);
+}
+
+RethinkDB.prototype.save = function (model, data, callback, strict, returnObject) {
     var _this = this;
 
     if (strict == undefined)
@@ -284,12 +292,19 @@ RethinkDB.prototype.save = function (model, data, callback, strict) {
             _this.pool.release(client);
             err = err || m.first_error && new Error(m.first_error);
             if (err)
-                callback(err)
+                callback && callback(err)
             else {
-                info = {}
-                if (m.inserted > 0)
-                    info.isNewInstance = true
-                callback(null, m.changes[0].new_val.id, info);
+                var info = {}
+                var id = model.id
+
+                if (m.inserted > 0) info.isNewInstance = true
+                if (m.changes) id = m.changes[0].new_val.id
+
+                if (returnObject && m.changes) {
+                    callback && callback(null, m.changes[0].new_val, info)
+                } else {                
+                    callback && callback(null, id, info);
+                }
             }
         });
     });
@@ -449,7 +464,7 @@ RethinkDB.prototype.destroyAll = function destroyAll(model, where, callback) {
             promise = buildWhere(_this, model, where, promise)
         promise.delete().run(client, function(error, result) {
             _this.pool.release(client);
-            callback(error, result);
+            callback(error, { count: result.deleted });
         });
     });
 };
@@ -489,6 +504,21 @@ RethinkDB.prototype.updateAttributes = function updateAttrs(model, id, data, cb)
         });
     });
 };
+
+RethinkDB.prototype.update = RethinkDB.prototype.updateAll = function update(model, where, data, callback) {
+    var _this = this;
+
+    _this.pool.acquire(function(error, client) {
+        if (error) throw error;
+        var promise = r.db(_this.database).table(model)
+        if (where !== undefined)
+            promise = buildWhere(_this, model, where, promise)
+        promise.update(data, { returnChanges: true }).run(client, function(error, result) {
+            _this.pool.release(client);
+            callback(error, { count: result.replaced });
+        });
+    });
+}
 
 RethinkDB.prototype.disconnect = function () {
     var _this = this;
