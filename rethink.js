@@ -6,7 +6,7 @@ var async = require("async");
 var _ = require("lodash-node");
 var util = require("util");
 
-var Connector = require('loopback-connector').Connector;
+var Connector = require("loopback-connector").Connector;
 
 exports.initialize = function initializeDataSource(dataSource, callback) {
     if (!r) return;
@@ -261,11 +261,14 @@ RethinkDB.prototype.create = RethinkDB.prototype.updateOrCreate = function (mode
         delete data.id;
     }
 
-    this.save(model, data, callback);
+    this.save(model, data, callback, true);
 };
 
-RethinkDB.prototype.save = function (model, data, callback) {
+RethinkDB.prototype.save = function (model, data, callback, strict) {
     var _this = this;
+
+    if (strict == undefined)
+        strict = false
 
     _this.pool.acquire(function(error, client) {
         if (error) throw error;
@@ -275,13 +278,17 @@ RethinkDB.prototype.save = function (model, data, callback) {
                 data[key] = null;
         });
 
-        r.db(_this.database).table(model).insert(data, { conflict: "update", returnChanges: true }).run(client, function (err, m) {
+        r.db(_this.database).table(model).insert(data, { conflict: strict ? "error": "update", returnChanges: true }).run(client, function (err, m) {
             _this.pool.release(client);
             err = err || m.first_error && new Error(m.first_error);
             if (err)
                 callback(err)
-            else
-                callback(null, m['changes'][0]['new_val']['id']);
+            else {
+                info = {}
+                if (m.changes.inserted > 0)
+                    info.isNewInstance = true
+                callback(null, m.changes[0].new_val.id, info);
+            }
         });
     });
 };
@@ -425,12 +432,20 @@ RethinkDB.prototype.all = function all(model, filter, callback) {
     }, 0); // high-priority pooling
 };
 
-RethinkDB.prototype.destroyAll = function destroyAll(model, callback) {
+RethinkDB.prototype.destroyAll = function destroyAll(model, where, callback) {
     var _this = this;
+
+    if (!callback && "function" === typeof where) {
+        callback = where
+        where = undefined
+    }
 
     _this.pool.acquire(function(error, client) {
         if (error) throw error;
-        r.db(_this.database).table(model).delete().run(client, function(error, result) {
+        var promise = r.db(_this.database).table(model)
+        if (where !== undefined)
+            promise = buildWhere(_this, model, where, promise)
+        promise.delete().run(client, function(error, result) {
             _this.pool.release(client);
             callback(error, result);
         });
@@ -642,8 +657,11 @@ function buildWhere(self, model, where, promise) {
         return promise;
     }
 
-    var query = buildFilter(where)    
+    var query = buildFilter(where)
 
-    return promise.filter(query)
+    if (query)
+        return promise.filter(query)
+    else
+        return promise
 
 }
