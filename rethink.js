@@ -74,6 +74,8 @@ exports.initialize = function initializeDataSource(dataSource, callback) {
         }
     });
 
+    dataSource.connector = dataSource.adapter
+
     process.nextTick(callback);
 };
 
