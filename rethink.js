@@ -287,7 +287,7 @@ RethinkDB.prototype.save = function (model, data, callback, strict) {
                 callback(err)
             else {
                 info = {}
-                if (m.changes.inserted > 0)
+                if (m.inserted > 0)
                     info.isNewInstance = true
                 callback(null, m.changes[0].new_val.id, info);
             }
