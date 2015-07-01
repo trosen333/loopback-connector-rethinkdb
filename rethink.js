@@ -146,7 +146,7 @@ RethinkDB.prototype.autoupdate = function(models, done) {
                     done(err);
                 });
             });
-            
+
         });
     });
 
@@ -302,7 +302,7 @@ RethinkDB.prototype.save = function (model, data, callback, strict, returnObject
 
                 if (returnObject && m.changes) {
                     callback && callback(null, m.changes[0].new_val, info)
-                } else {                
+                } else {
                     callback && callback(null, id, info);
                 }
             }
@@ -464,7 +464,7 @@ RethinkDB.prototype.destroyAll = function destroyAll(model, where, callback) {
             promise = buildWhere(_this, model, where, promise)
         promise.delete().run(client, function(error, result) {
             _this.pool.release(client);
-            callback(error, { count: result.deleted });
+            callback(error, { count: result ? result.deleted : null });
         });
     });
 };
@@ -515,7 +515,7 @@ RethinkDB.prototype.update = RethinkDB.prototype.updateAll = function update(mod
             promise = buildWhere(_this, model, where, promise)
         promise.update(data, { returnChanges: true }).run(client, function(error, result) {
             _this.pool.release(client);
-            callback(error, { count: result.replaced });
+            callback(error, { count: result ? result.replaced : null});
         });
     });
 }
@@ -674,7 +674,7 @@ function buildFilter(where) {
                 // k is field equality
                 filter.push(r.row(k).eq(condition))
             }
-        }    
+        }
 
     })
 
