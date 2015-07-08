@@ -1,7 +1,6 @@
 /* jshint sub: true */
 var r = require("rethinkdb");
 var moment = require("moment");
-var gpool = require("generic-pool");
 var async = require("async");
 var _ = require("lodash-node");
 var util = require("util");
@@ -54,27 +53,11 @@ exports.initialize = function initializeDataSource(dataSource, callback) {
     s.safe = s.safe || false;
 
     dataSource.adapter = new RethinkDB(s, dataSource);
-    dataSource.adapter.pool = gpool.Pool({
-        name: "loopback-rethink-pool",
-        create: function(cb) {
-            r.connect({host: s.host, port: s.port}, function (error, client) {
-                if (error) return cb(error, null);
-                cb(null, client);
-            });
-        },
-        destroy: function(client) {
-            client.close();
-        },
-        max: s.poolMax || 10,
-        min: s.poolMin || 1,
-        idleTimeoutMillis: 30000,
-        log: function(what, level) {
-            if (level === "error")
-                require('fs').appendFile("loopback-rethink-pool.log", what + "\r\n");
-        }
-    });
-
     dataSource.connector = dataSource.adapter
+
+    if (callback) {
+        dataSource.connector.connect(callback);
+    }
 
     process.nextTick(callback);
 };
@@ -88,7 +71,18 @@ function RethinkDB(s, dataSource) {
 util.inherits(RethinkDB, Connector);
 
 RethinkDB.prototype.connect = function(cb) {
-    cb(); // connection pooling handles it
+    var self = this
+    var s = self.settings
+    if (self.db) {
+        process.nextTick(function () {
+            cb && cb(null, self.db);
+        });
+    } else {
+        r.connect({host: s.host, port: s.port}, function (error, client) {
+            self.db = client
+            cb && cb(error, client)
+        });
+    }
 };
 
 RethinkDB.prototype.getTypes = function () {
@@ -106,11 +100,20 @@ RethinkDB.prototype.table = function(model) {
 // creates tables if not exists
 RethinkDB.prototype.autoupdate = function(models, done) {
     var _this = this;
+    var client = this.db;
+
+    if (!client) {
+        _this.dataSource.once('connected', function () {
+            _this.autoupdate(models, done);
+        });
+        return
+    }
 
     if ((!done) && ('function' === typeof models)) {
       done = models;
       models = undefined;
     }
+
     // First argument is a model name
     if ('string' === typeof models) {
       models = [models];
@@ -118,36 +121,27 @@ RethinkDB.prototype.autoupdate = function(models, done) {
 
     models = models || Object.keys(_this._models);
 
-    _this.pool.acquire(function(error, client) {
+    r.db(_this.database).tableList().run(client, function(error, cursor) {
         if (error) {
             return done(error);
         }
 
-        r.db(_this.database).tableList().run(client, function(error, cursor) {
-            if (error) {
-                _this.pool.release(client);
-                return done(error);
-            }
-
-            cursor.toArray(function(error, list) {
-                async.each(models, function(model, cb) {
-                    if (list.length === 0 || list.indexOf(model) < 0) {
-                        r.db(_this.database).tableCreate(model).run(client, function(error) {
-                            if (error) return cb(error);
-
-                            createIndices(cb, model, client);
-                        });
-                    }
-                    else {
+        cursor.toArray(function(error, list) {
+            async.each(models, function(model, cb) {
+                if (list.length === 0 || list.indexOf(model) < 0) {
+                    r.db(_this.database).tableCreate(model).run(client, function(error) {
+                        if (error) return cb(error);
                         createIndices(cb, model, client);
-                    }
-                }, function(err) {
-                    _this.pool.release(client);
-                    done(err);
-                });
+                    });
+                }
+                else {
+                    createIndices(cb, model, client);
+                }
+            }, function(e) {
+                done(e);
             });
-            
         });
+        
     });
 
     function createIndices(cb, model, client) {
@@ -202,58 +196,45 @@ RethinkDB.prototype.automigrate = function(models, cb) {
 // checks if database needs to be actualized
 RethinkDB.prototype.isActual = function(cb) {
     var _this = this;
+    var client = this.db;
 
-    _this.pool.acquire(function(error, client) {
-        if (error) throw error;
+    r.db(_this.database).tableList().run(client, function(error, cursor) {
+        if (error) return cb(error)
+        if (!cursor.next()) return cb(null, _.isEmpty(_this._models))
 
-        r.db(_this.database).tableList().run(client, function(error, cursor) {
-            if (!error) {
-                if (cursor.next()) {
-                    cursor.toArray(function(error, list) {
-                        if (error) {
-                            _this.pool.release(client);
-                            return cb(error);
-                        }
-                        var actual = true;
-                        async.each(Object.keys(_this._models), function(model, cb2) {
-                            if(!actual) return cb2();
+        cursor.toArray(function(error, list) {
+            if (error) {
+                return cb(error);
+            }
+            var actual = true;
+            async.each(Object.keys(_this._models), function(model, cb2) {
+                if(!actual) return cb2();
 
-                            var properties = _this._models[model].properties;
-                            var settings = _this._models[model].settings;
-                            var indexCollection = _.extend({}, properties, settings);
-                            if (list.indexOf(model) < 0) {
-                                actual = false;
-                                cb2();
-                            } else {
-                                r.db(_this.database).table(model).indexList().run(client, function(error, cursor) {
-                                    if (error) return cb2(error);
+                var properties = _this._models[model].properties;
+                var settings = _this._models[model].settings;
+                var indexCollection = _.extend({}, properties, settings);
+                if (list.indexOf(model) < 0) {
+                    actual = false;
+                    cb2();
+                } else {
+                    r.db(_this.database).table(model).indexList().run(client, function(error, cursor) {
+                        if (error) return cb2(error);
 
-                                    cursor.toArray(function(error, list) {
-                                        if (error || !actual) return cb2(error);
+                        cursor.toArray(function(error, list) {
+                            if (error || !actual) return cb2(error);
 
 
-                                        Object.keys(indexCollection).forEach(function (property) {
-                                            if (_hasIndex(_this, model, property) && list.indexOf(property) < 0)
-                                                actual = false;
-                                        });
-                                        cb2();
-                                    });
-                                });
-                            }
-                        }, function(err) {
-                            _this.pool.release(client);
-                            cb(err, actual);
+                            Object.keys(indexCollection).forEach(function (property) {
+                                if (_hasIndex(_this, model, property) && list.indexOf(property) < 0)
+                                    actual = false;
+                            });
+                            cb2();
                         });
                     });
                 }
-                else {
-                    _this.pool.release(client);
-                    cb(null, _.isEmpty(_this._models));
-                }
-            } else {
-                _this.pool.release(client);
-                cb(error);
-            }
+            }, function(err) {
+                cb(err, actual);
+            });
         });
     });
 };
@@ -276,56 +257,49 @@ RethinkDB.prototype.updateOrCreate = function (model, data, callback) {
 
 RethinkDB.prototype.save = function (model, data, callback, strict, returnObject) {
     var _this = this;
+    var client = this.db;
 
     if (strict == undefined)
         strict = false
 
-    _this.pool.acquire(function(error, client) {
-        if (error) throw error;
+    Object.keys(data).forEach(function (key) {
+        if (data[key] === undefined)
+            data[key] = null;
+    });
 
-        Object.keys(data).forEach(function (key) {
-            if (data[key] === undefined)
-                data[key] = null;
-        });
+    r.db(_this.database).table(model).insert(data, { conflict: strict ? "error": "update", returnChanges: true }).run(client, function (err, m) {
+        err = err || m.first_error && new Error(m.first_error);
+        if (err)
+            callback && callback(err)
+        else {
+            var info = {}
+            var id = model.id
 
-        r.db(_this.database).table(model).insert(data, { conflict: strict ? "error": "update", returnChanges: true }).run(client, function (err, m) {
-            _this.pool.release(client);
-            err = err || m.first_error && new Error(m.first_error);
-            if (err)
-                callback && callback(err)
-            else {
-                var info = {}
-                var id = model.id
+            //if (m.inserted > 0) info.isNewInstance = true
+            if (m.changes && m.changes.length > 0) id = m.changes[0].new_val.id
 
-                if (m.inserted > 0) info.isNewInstance = true
-                if (m.changes) id = m.changes[0].new_val.id
-
-                if (returnObject && m.changes) {
-                    callback && callback(null, m.changes[0].new_val, info)
-                } else {                
-                    callback && callback(null, id, info);
-                }
+            if (returnObject && m.changes && m.changes.length > 0) {
+                callback && callback(null, m.changes[0].new_val, info)
+            } else {                
+                callback && callback(null, id, info);
             }
-        });
+        }
     });
 };
 
 RethinkDB.prototype.exists = function (model, id, callback) {
     var _this = this;
+    var client = this.db;
 
-    _this.pool.acquire(function(error, client) {
-        if (error) throw error;
-
-        r.db(_this.database).table(model).get(id).run(client, function (err, data) {
-            _this.pool.release(client);
-            callback(err, !!(!err && data));
-        });
+    r.db(_this.database).table(model).get(id).run(client, function (err, data) {
+        callback(err, !!(!err && data));
     });
 };
 
 RethinkDB.prototype.find = function find(model, id, callback) {
     var _this = this,
         _keys;
+    var client = this.db;
 
     var done = function (client) {
 
@@ -340,191 +314,157 @@ RethinkDB.prototype.find = function find(model, id, callback) {
                 _expandResult(data, _keys);
             }
 
-            // Release connection
-            _this.pool.release(client);
-
             // Done
             callback(err, data);
         };
     };
 
-    _this.pool.acquire(function(error, client) {
-        if (error) throw error;
-
-        r.db(_this.database)
-            .table(model)
-            .get(id)
-            .run(client, done(client));
-    });
+    r.db(_this.database)
+        .table(model)
+        .get(id)
+        .run(client, done(client));
 };
 
 RethinkDB.prototype.destroy = function destroy(model, id, callback) {
     var _this = this;
+    var client = this.db;
 
-    _this.pool.acquire(function(error, client) {
-        if (error) throw error;
+    r.db(_this.database).table(model).get(id).delete().run(client, function(error, result) {
+        callback(error);
+    });
+};
 
-        r.db(_this.database).table(model).get(id).delete().run(client, function(error, result) {
-            _this.pool.release(client);
-            callback(error);
+RethinkDB.prototype.all = function all(model, filter, options, callback) {
+    var _this = this;
+    var client = this.db;
+
+    if (!filter) {
+        filter = {};
+    }
+
+    var promise = r.db(_this.database).table(model);
+
+    if (filter.where) {
+        promise = buildWhere(_this, model, filter.where, promise)//_processWhere(_this, model, filter.where, promise);
+    }
+
+    if (filter.order) {
+        var keys = filter.order;
+        if (typeof keys === 'string') {
+            keys = keys.split(',');
+        }
+        keys.forEach(function(key) {
+            var m = key.match(/\s+(A|DE)SC$/);
+            key = key.replace(/\s+(A|DE)SC$/, '').trim();
+            if (m && m[1] === 'DE') {
+                promise = promise.orderBy(r.desc(key));
+            } else {
+                promise = promise.orderBy(r.asc(key));
+            }
+        });
+    } else {
+        // default sort by id
+        promise = promise.orderBy(r.asc("id"));
+    }
+
+    if (filter.skip) {
+        promise = promise.skip(filter.skip);
+    } else if (filter.offset) {
+        promise = promise.skip(filter.offset);
+    }
+    if (filter.limit) {
+        promise = promise.limit(filter.limit);
+    }
+
+    //console.log(promise.toString())
+
+    promise.run(client, function(error, cursor) {
+
+        if (error || !cursor) {
+            return callback(error, null);
+        }
+
+        _keys = _this._models[model].properties;
+        _model = _this._models[model].model;
+
+        cursor.toArray(function (err, data) {
+            if (err) {
+                return callback(err);
+            }
+
+            data.forEach(function(element, index) {
+                _expandResult(element, _keys);
+            });
+
+            if (filter && filter.include && filter.include.length > 0) {
+                _model.include(data, filter.include, options, callback);
+            } else {
+                callback && callback(null, data);
+            }
         });
     });
 };
 
-RethinkDB.prototype.all = function all(model, filter, callback) {
-    var _this = this;
-
-    _this.pool.acquire(function(error, client) {
-        if (error) throw error;
-
-        if (!filter) {
-            filter = {};
-        }
-
-        var promise = r.db(_this.database).table(model);
-
-        if (filter.where) {
-            promise = buildWhere(_this, model, filter.where, promise)//_processWhere(_this, model, filter.where, promise);
-        }
-
-        if (filter.order) {
-            var keys = filter.order;
-            if (typeof keys === 'string') {
-                keys = keys.split(',');
-            }
-            keys.forEach(function(key) {
-                var m = key.match(/\s+(A|DE)SC$/);
-                key = key.replace(/\s+(A|DE)SC$/, '').trim();
-                if (m && m[1] === 'DE') {
-                    promise = promise.orderBy(r.desc(key));
-                } else {
-                    promise = promise.orderBy(r.asc(key));
-                }
-            });
-        } else {
-            // default sort by id
-            promise = promise.orderBy(r.asc("id"));
-        }
-
-        if (filter.skip) {
-            promise = promise.skip(filter.skip);
-        } else if (filter.offset) {
-            promise = promise.skip(filter.offset);
-        }
-        if (filter.limit) {
-            promise = promise.limit(filter.limit);
-        }
-
-        //console.log(promise.toString())
-
-        promise.run(client, function(error, cursor) {
-
-            if (error || !cursor) {
-                _this.pool.release(client);
-                return callback(error, null);
-            }
-
-            _keys = _this._models[model].properties;
-            _model = _this._models[model].model;
-
-            cursor.toArray(function (err, data) {
-                if (err) {
-                    _this.pool.release(client);
-                    return callback(err);
-                }
-
-                data.forEach(function(element, index) {
-                    _expandResult(element, _keys);
-                });
-
-                _this.pool.release(client);
-
-                if (filter && filter.include && filter.include.length > 0) {
-                    _model.include(data, filter.include, callback);
-                } else {
-                    callback(null, data);
-                }
-            });
-        });
-    }, 0); // high-priority pooling
-};
-
 RethinkDB.prototype.destroyAll = function destroyAll(model, where, callback) {
     var _this = this;
+    var client = this.db;
 
     if (!callback && "function" === typeof where) {
         callback = where
         where = undefined
     }
 
-    _this.pool.acquire(function(error, client) {
-        if (error) throw error;
-        var promise = r.db(_this.database).table(model)
-        if (where !== undefined)
-            promise = buildWhere(_this, model, where, promise)
-        promise.delete().run(client, function(error, result) {
-            _this.pool.release(client);
-            callback(error, { count: result.deleted });
-        });
+    var promise = r.db(_this.database).table(model)
+    if (where !== undefined)
+        promise = buildWhere(_this, model, where, promise)
+    promise.delete().run(client, function(error, result) {
+        callback(error, { count: result.deleted });
     });
 };
 
 RethinkDB.prototype.count = function count(model, callback, where) {
     var _this = this;
+    var client = this.db;
 
-    _this.pool.acquire(function(error, client) {
-        if (error) throw error;
+    var promise = r.db(_this.database).table(model);
 
-        var promise = r.db(_this.database).table(model);
+    if (where && typeof where === "object")
+        promise = buildWhere(_this, model, where, promise);
 
-        if (where && typeof where === "object")
-            promise = buildWhere(_this, model, where, promise);
-
-        promise.count().run(client, function (err, count) {
-            _this.pool.release(client);
-            callback(err, count);
-        });
+    promise.count().run(client, function (err, count) {
+        callback(err, count);
     });
 };
 
 RethinkDB.prototype.updateAttributes = function updateAttrs(model, id, data, cb) {
     var _this = this;
+    var client = this.db;
 
-    _this.pool.acquire(function(error, client) {
-        if (error) throw error;
-
-        data.id = id;
-        Object.keys(data).forEach(function (key) {
-            if (data[key] === undefined)
-                data[key] = null;
-        });
-        r.db(_this.database).table(model).update(data).run(client, function(err, object) {
-            _this.pool.release(client);
-            cb(err, data);
-        });
+    data.id = id;
+    Object.keys(data).forEach(function (key) {
+        if (data[key] === undefined)
+            data[key] = null;
+    });
+    r.db(_this.database).table(model).update(data).run(client, function(err, object) {
+        cb(err, data);
     });
 };
 
 RethinkDB.prototype.update = RethinkDB.prototype.updateAll = function update(model, where, data, callback) {
     var _this = this;
+    var client = this.db;
 
-    _this.pool.acquire(function(error, client) {
-        if (error) throw error;
-        var promise = r.db(_this.database).table(model)
-        if (where !== undefined)
-            promise = buildWhere(_this, model, where, promise)
-        promise.update(data, { returnChanges: true }).run(client, function(error, result) {
-            _this.pool.release(client);
-            callback(error, { count: result.replaced });
-        });
+    var promise = r.db(_this.database).table(model)
+    if (where !== undefined)
+        promise = buildWhere(_this, model, where, promise)
+    promise.update(data, { returnChanges: true }).run(client, function(error, result) {
+        callback(error, { count: result.replaced });
     });
 }
 
 RethinkDB.prototype.disconnect = function () {
-    var _this = this;
-    _this.pool.drain(function() {
-        _this.pool.destroyAllNow();
-    });
+    this.db.close()
+    this.db = null
 };
 
 /*
