@@ -418,7 +418,7 @@ RethinkDB.prototype.destroyAll = function destroyAll(model, where, callback) {
     if (where !== undefined)
         promise = buildWhere(_this, model, where, promise)
     promise.delete().run(client, function(error, result) {
-        callback(error, { count: result.deleted });
+        callback(error, { count: result ? result.deleted : null});
     });
 };
 
@@ -458,7 +458,7 @@ RethinkDB.prototype.update = RethinkDB.prototype.updateAll = function update(mod
     if (where !== undefined)
         promise = buildWhere(_this, model, where, promise)
     promise.update(data, { returnChanges: true }).run(client, function(error, result) {
-        callback(error, { count: result.replaced });
+        callback(error, { count: result ? result.replaced : null });
     });
 }
 
