@@ -259,6 +259,13 @@ RethinkDB.prototype.save = function (model, data, callback, strict, returnObject
     var _this = this;
     var client = this.db;
 
+    if (!client) {
+        _this.dataSource.once('connected', function () {
+            _this.save(model, data, callback, strict, returnObject);
+        });
+        return
+    }
+
     if (strict == undefined)
         strict = false
 
@@ -291,6 +298,13 @@ RethinkDB.prototype.exists = function (model, id, callback) {
     var _this = this;
     var client = this.db;
 
+    if (!client) {
+        _this.dataSource.once('connected', function () {
+            _this.exists(model, id, callback);
+        });
+        return
+    }
+
     r.db(_this.database).table(model).get(id).run(client, function (err, data) {
         callback(err, !!(!err && data));
     });
@@ -300,6 +314,13 @@ RethinkDB.prototype.find = function find(model, id, callback) {
     var _this = this,
         _keys;
     var client = this.db;
+
+    if (!client) {
+        _this.dataSource.once('connected', function () {
+            _this.find(model, id, callback);
+        });
+        return
+    }
 
     var done = function (client) {
 
@@ -329,6 +350,13 @@ RethinkDB.prototype.destroy = function destroy(model, id, callback) {
     var _this = this;
     var client = this.db;
 
+    if (!client) {
+        _this.dataSource.once('connected', function () {
+            _this.destroy(model, id, callback);
+        });
+        return
+    }
+
     r.db(_this.database).table(model).get(id).delete().run(client, function(error, result) {
         callback(error);
     });
@@ -337,6 +365,13 @@ RethinkDB.prototype.destroy = function destroy(model, id, callback) {
 RethinkDB.prototype.all = function all(model, filter, options, callback) {
     var _this = this;
     var client = this.db;
+
+    if (!client) {
+        _this.dataSource.once('connected', function () {
+            _this.all(model, filter, options, callback);
+        });
+        return
+    }
 
     if (!filter) {
         filter = {};
@@ -409,6 +444,13 @@ RethinkDB.prototype.destroyAll = function destroyAll(model, where, callback) {
     var _this = this;
     var client = this.db;
 
+    if (!client) {
+        _this.dataSource.once('connected', function () {
+            _this.destroyAll(model, where, callback);
+        });
+        return
+    }
+
     if (!callback && "function" === typeof where) {
         callback = where
         where = undefined
@@ -417,14 +459,23 @@ RethinkDB.prototype.destroyAll = function destroyAll(model, where, callback) {
     var promise = r.db(_this.database).table(model)
     if (where !== undefined)
         promise = buildWhere(_this, model, where, promise)
+
     promise.delete().run(client, function(error, result) {
         callback(error, { count: result ? result.deleted : null});
     });
 };
 
-RethinkDB.prototype.count = function count(model, callback, where) {
+RethinkDB.prototype.count = function count(model, where, callback) {
     var _this = this;
     var client = this.db;
+
+
+    if (!client) {
+        _this.dataSource.once('connected', function () {
+            _this.count(model, where, callback);
+        });
+        return
+    }
 
     var promise = r.db(_this.database).table(model);
 
@@ -440,6 +491,14 @@ RethinkDB.prototype.updateAttributes = function updateAttrs(model, id, data, cb)
     var _this = this;
     var client = this.db;
 
+
+    if (!client) {
+        _this.dataSource.once('connected', function () {
+            _this.updateAttributes(model, id, data, callback);
+        });
+        return
+    }
+
     data.id = id;
     Object.keys(data).forEach(function (key) {
         if (data[key] === undefined)
@@ -453,6 +512,14 @@ RethinkDB.prototype.updateAttributes = function updateAttrs(model, id, data, cb)
 RethinkDB.prototype.update = RethinkDB.prototype.updateAll = function update(model, where, data, callback) {
     var _this = this;
     var client = this.db;
+
+
+    if (!client) {
+        _this.dataSource.once('connected', function () {
+            _this.update(model, where, data, callback);
+        });
+        return
+    }
 
     var promise = r.db(_this.database).table(model)
     if (where !== undefined)
