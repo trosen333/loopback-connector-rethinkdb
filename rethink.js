@@ -465,14 +465,14 @@ RethinkDB.prototype.destroyAll = function destroyAll(model, where, callback) {
     });
 };
 
-RethinkDB.prototype.count = function count(model, where, callback) {
+RethinkDB.prototype.count = function count(model, callback, where) {
     var _this = this;
     var client = this.db;
 
 
     if (!client) {
         _this.dataSource.once('connected', function () {
-            _this.count(model, where, callback);
+            _this.count(model, callback, where);
         });
         return
     }
