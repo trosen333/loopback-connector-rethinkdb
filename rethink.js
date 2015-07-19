@@ -310,7 +310,7 @@ RethinkDB.prototype.exists = function (model, id, callback) {
     });
 };
 
-RethinkDB.prototype.find = function find(model, id, options, callback) {
+RethinkDB.prototype.find = function find(model, id, callback, options) {
     var _this = this,
         _keys;
     var client = this.db;
