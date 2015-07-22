@@ -431,7 +431,7 @@ RethinkDB.prototype.all = function all(model, filter, options, callback) {
                 _expandResult(element, _keys);
             });
 
-            if (filter && filter.include && filter.include.length > 0) {
+            if (filter && filter.include) {
                 _model.include(data, filter.include, options, callback);
             } else {
                 callback && callback(null, data);
