@@ -484,7 +484,7 @@ RethinkDB.prototype.all = function all(model, filter, options, callback) {
                     tempInclude.push(filter.include.relation)
                     _model.include(data, tempInclude, options, callback);
                 }else{
-                    callback && callback(null, data);
+                     _model.include(data, [filter.include], options, callback);
                 }
 
             } else {
