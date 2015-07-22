@@ -475,8 +475,18 @@ RethinkDB.prototype.all = function all(model, filter, options, callback) {
                 _expandResult(element, _keys);
             });
 
-            if (filter && filter.include) {
-                _model.include(data, filter.include, options, callback);
+            if (filter && filter.include){
+
+                if(Array.isArray(filter.include)){
+                    _model.include(data, filter.include, options, callback);
+                }else if(typeof filter.include == 'object'){
+                    var tempInclude = [];
+                    tempInclude.push(filter.include.relation)
+                    _model.include(data, tempInclude, options, callback);
+                }else{
+                    callback && callback(null, data);
+                }
+
             } else {
                 callback && callback(null, data);
             }
