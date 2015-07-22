@@ -646,6 +646,12 @@ var operators = {
 }
 
 function buildFilter(where) {
+
+    if (where === null || (typeof where !== 'object')) {
+        return _.reduce(filter, function(s, f) {
+            return s.and(f)
+        })
+    }
     var filter = []
 
     Object.keys(where).forEach(function(k) {
@@ -657,16 +663,19 @@ function buildFilter(where) {
         if (k === "and" || k === "or") {
             if (_.isArray(condition)) {
                 var query = _.map(condition, function(c) {
-                    return buildFilter(c)
+                    if(c)
+                        return buildFilter(c)
                 })
 
                 if (k === "and")
                     filter.push(_.reduce(query, function(s, f) {
-                        return s.and(f)
+                        if(s && f)
+                            return s.and(f)
                     }))
                 else
                     filter.push(_.reduce(query, function(s, f) {
-                        return s.or(f)
+                        if(s || f)
+                            return s.or(f);
                     }))
             }
         } else {
