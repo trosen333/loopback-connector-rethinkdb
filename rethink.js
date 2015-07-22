@@ -542,14 +542,24 @@ RethinkDB.prototype.updateAttributes = function updateAttrs(model, id, data, cb)
         });
         return
     }
+    if (strict == undefined)
+        strict = false
 
-    data.id = id;
     Object.keys(data).forEach(function (key) {
         if (data[key] === undefined)
             data[key] = null;
     });
-    r.db(_this.database).table(model).update(data).run(client, function(err, object) {
-        cb(err, data);
+
+    _this.find(model, data.id,function(err,found){
+        if(err)
+            console.log(err);
+        if(found){
+            _this.updateOrCreate(model,data,callback);
+        }
+        else{
+            err = "No " + model + " found for id " + id;
+            callback(err);
+        }
     });
 };
 
