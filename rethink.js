@@ -250,9 +250,53 @@ RethinkDB.prototype.create = function (model, data, callback) {
 RethinkDB.prototype.updateOrCreate = function (model, data, callback) {
     if (data.id === null || data.id === undefined) {
         delete data.id;
+        this.save(model, data, callback, true, true);
+    }
+else{
+        var _this = this;
+        var client = this.db;
+        var strict = true;
+        var returnObject = true;
+
+        if (!client) {
+            _this.dataSource.once('connected', function () {
+                _this.updateOrCreate(model, data, callback);
+            });
+            return
+        }
+        if (strict == undefined)
+            strict = false
+
+        Object.keys(data).forEach(function (key) {
+            if (data[key] === undefined)
+                data[key] = null;
+        });
+
+        _this.find(model, data.id,function(err,found){
+            if(err)
+            console.log(err);
+            if(found)
+        r.db(_this.database).table(model).get(data.id).update(data).run(client, function (err, m, information) {
+            err = err || m.first_error && new Error(m.first_error);
+            if (err)
+                callback && callback(err)
+            else {
+                var info = {}
+
+                if (m.inserted > 0) info.isChanged = true;
+                if (m.unchanged > 0) info.isChanged = false;
+                if (returnObject) {
+                    callback && callback(null, data, info)
+                } else {
+                    callback && callback(null, data, info);
+                }
+            }
+        });
+            else
+                _this.save(model, data, callback, true, true);
+        });
     }
 
-    this.save(model, data, callback, true, true);
 }
 
 RethinkDB.prototype.save = function (model, data, callback, strict, returnObject) {
